@@ -1,6 +1,8 @@
 import numpy as np
 import CoolProp.CoolProp as CP
 from scipy import interpolate
+import matplotlib.pyplot as plt
+from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
 
 class radiator:
     '''
@@ -33,9 +35,9 @@ class radiator:
         self.h_fin=10e-3                    # [m], fin height
         self.t_fin=0.1e-3                   # [m], fin thickness
         self.P_fin=1.4e-3                   # [m], fin pitch (18 FPI)
-        self.N_finptube = 0.0254/18*self.L_tube_pass     # [-], number of fins on each tube
+        self.N_finptube = self.L_tube_pass/self.P_fin     # [-], number of fins on each tube
         self.D_fin=35e-3                    # [m], fin depth (same as tube)
-        self.Dh_fin = 4*((self.P_fin-self.t_fin+2*(self.h_fin-self.t_fin))*self.D_fin)/((self.h_fin-self.t_fin)*((self.P_fin-self.t_fin)/2)*2)
+        self.Dh_fin = 4*(self.P_fin-self.t_fin)*(self.h_fin-self.t_fin)/(((self.h_fin-self.t_fin)+(self.P_fin-self.t_fin))*2)
 
         self.H_port=self.t_tube-2*self.t_wall       # [m], height of port
         self.W_port=(self.D_tube-(self.N_port+1)*self.t_wall)/self.N_port       # [m], width of port
@@ -50,7 +52,7 @@ class radiator:
         self.N_elem = self.N_tube_pass*self.N_pass*N_segment
 
         self.dx = self.L_tube_pass/self.N_elemptube
-
+        self.P_tube = self.h_fin + self.t_tube
         
         # ------------- Area Calculation ----------- #
         self.A_ref_tot = self.P_port_tot*self.L_tube_pass*self.N_tube_pass*self.N_pass
@@ -61,9 +63,9 @@ class radiator:
         self.A_air_elem = self.A_air_tot/self.N_elem
         self.A_front = self.W_HX*self.H_HX      # frontal area of heat exchanger
         self.A_front_cross = self.L_tube_pass*self.t_tube*self.N_tube_pass*self.N_pass + \
-                       self.t_fin*self.h_fin*self.N_finptube*self.N_tube_pass*self.N_pass       # frontal cross sectional area of tube+fin
+                       (self.t_fin*self.h_fin+self.t_fin*(self.P_fin-self.t_fin))*self.N_finptube*self.N_tube_pass*self.N_pass # frontal cross sectional area of tube+fin
         self.A_air_free = self.A_front-self.A_front_cross           # minimum free flow area
-
+        self.sigma = self.A_air_free/self.A_front
         self.k_w = 155      # [W/m-K]
         self.rho_w = 2710   # [kg/m^3]
 
@@ -83,6 +85,7 @@ class radiator:
         self.rho_ai = CP.PropsSI('D','T',self.T_ai+273.15,'P',self.P_ai*1e3,'Air')
         self.G_air = self.m_dot_air/self.A_air_free
         self.vel_air = self.m_dot_air/self.rho_ai/self.A_air_free
+        # self.vel_air = 4.758
 
 
 def airsidehtc_chang_wang(P_air,k_HX,theta_oh,p_fin,p_louver,h_fin,D_fin,L_louver,w_tube,t_tube,t_fin,T_air,Vel_air):
@@ -119,10 +122,9 @@ def airsidehtc_chang_wang(P_air,k_HX,theta_oh,p_fin,p_louver,h_fin,D_fin,L_louve
     k_air = CP.PropsSI('L','P',P_air*1e3,'T',T_air,'air') # [W/(m-K)]   mixture thermal conductivity 
     mu_air = CP.PropsSI('V','P',P_air*1e3,'T',T_air,'air')   # [kg/(m-s)]    mixture viscosity
     rho_air = CP.PropsSI('D','P',P_air*1e3,'T',T_air,'air') # [kg/m**3]  density of air
-    Pr_air = mu_air * cp_air / k_air
+    Pr_air = CP.PropsSI('PRANDTL','P',P_air*1e3,'T',T_air,'air')
     	
     Re_lp = rho_air * Vel_air * p_louver / mu_air
-    print(Re_lp)
     p_tube = h_fin + t_tube
     # "! Citation: Chang and Wang 1997, A generalized heat transfer correlation for Iouver fin geometry, Eq.(9)"
     # "Applicable range: 100 < Re_lp < 3000, corrugated fin geometry"
@@ -131,7 +133,6 @@ def airsidehtc_chang_wang(P_air,k_HX,theta_oh,p_fin,p_louver,h_fin,D_fin,L_louve
     # {Largely underestimated air side heat transfer coefficient. This paper didn't give applicable Re_lp range. It is developed at 250 < Re_lp < 2600. Face velocity 2 m/s < Vel_face < 18 m/s}
     # j = 0.26712* Re_lp**(-0.1944) * (theta_oh/90)**0.257 * (p_fin/p_louver)**(-0.5177) * (h_fin/p_louver)**(-1.9045) * (w_tube/p_louver)**(-0.2147) * (L_louver/p_louver)**1.7159 * (t_fin/p_louver)**(-0.05) # "Colburn j-factor"}
     St = j * Pr_air**(-2/3) # "Stanton number"
-    print(j)
     htc = rho_air * Vel_air * cp_air * St  # "heat transfer coefficient"
     
     # Not sure about the purpose of effectiveness calculated below.    
@@ -147,7 +148,7 @@ def airsidehtc_chang_wang(P_air,k_HX,theta_oh,p_fin,p_louver,h_fin,D_fin,L_louve
 
     return htc, eta_f, eta_t
 
-def airside_dpdz_Chang_Wang_1999(self,T_ai,P_ai,A_front,A_min,L_p,F_p,F_l,F_t,D_h,L_l,F_d,T_p,D_m,theta):
+def airside_dpdz_Chang_Wang_1999(self,T_ai,P_ai,L_p,F_p,F_l,F_t,D_h,L_l,F_d,T_p,D_m,theta):
     '''
     !Citation: 
     Yu-Juei Chang, Kuei-Chang Hsu, Yur-Tsai Lin, Chi-Chuan Wang, A generalized friction correlation for louver fin geometry,
@@ -156,9 +157,7 @@ def airside_dpdz_Chang_Wang_1999(self,T_ai,P_ai,A_front,A_min,L_p,F_p,F_l,F_t,D_
     International Journal of Heat and Mass Transfer, Volume 49, Issues 21–22, 2006, Pages 4250-4253
     
      * Input Variables:
-        @rho_air            : air density, [kg/m^3]
-        @A_front            : frontal area, [m^2]
-        @A_min              : minimum free flow area, [m^2]
+        @T_ai, P_ai
         @L_p                : louver pitch, [m]
         @F_p                : fin pitch, [m]
         @F_l                : fin length, [m]
@@ -166,7 +165,7 @@ def airside_dpdz_Chang_Wang_1999(self,T_ai,P_ai,A_front,A_min,L_p,F_p,F_l,F_t,D_
         @D_h                : hydralic diameter of fin array, [m]
         @L_l                : louver length, [m]
         @F_d                : fin depth, [m]
-        @T_p                : tube thickness, [m]
+        @T_p                : tube pitch, [m]
         @D_m                : major tube diameter, [m]
         @theta              : louver angle, [deg]
 
@@ -184,12 +183,12 @@ def airside_dpdz_Chang_Wang_1999(self,T_ai,P_ai,A_front,A_min,L_p,F_p,F_l,F_t,D_
         f3 = (F_p/L_l)**(-0.308)*(F_d/L_l)**(-0.308)*(np.e**(-0.1167*T_p/D_m))*theta**0.35
     elif Re_Lp>=150 and Re_Lp<5e3:
         f1 = 4.97*Re_Lp**(0.6049-1.064/theta**0.2) * (np.log((F_t/F_p)**0.5+0.9))**(-0.527)
-        f2 = ((D_h/L_p)*np.log(0.3*Re_Lp))**(-2.966)*(F_p/L_l)**(-0.7931*T_p/T_h)
-        f3 = (T_p/D_m)**(-0.0446)*np.log(1.2+(L_p/F_p)**1.4)**(-3.553)*theta**(-0.477)
+        f2 = (((D_h/L_p)*np.log(0.3*Re_Lp))**(-2.966)) * (F_p/L_l)**(-0.7931*T_p/T_h)
+        f3 = ((T_p/D_m)**(-0.0446)) * ((np.log(1.2+(L_p/F_p)**1.4))**(-3.553)) * theta**(-0.477)
     f = f1*f2*f3
     return f
 
-def airside_dpdz_Chang_Wang_1996(f,A_c,A,A_front,rho_1,rho_2,rho_l,G_c,K_c,K_e):
+def airside_dpdz_Chang_Wang_1996(f,A_c,A,A_front,rho_1,rho_2,G_c,K_c,K_e):
     '''
     !Citation:Yu-Juei Chang, Chi-Chuan Wang, Air
               side performance of brazed aluminum
@@ -212,7 +211,7 @@ def airside_dpdz_Chang_Wang_1996(f,A_c,A,A_front,rho_1,rho_2,rho_l,G_c,K_c,K_e):
     '''
     sigma = A_c/A_front         # contraction ratio of fin array
     rho_m = (rho_1+rho_2)/2
-    DELTA_P = (f*A/A_c*rho_1/rho_m + (K_c+1-sigma**2) + 2*(rho_1/rho_2-1) - (1-sigma**2-K_e)*rho_1/rho_2)*G_c**2/(2*rho_l)
+    DELTA_P = (f*A/A_c*rho_1/rho_m + (K_c+1-sigma**2) + 2*(rho_1/rho_2-1) - (1-sigma**2-K_e)*rho_1/rho_2)*G_c**2/(2*rho_1)
     return DELTA_P
 
 def htc_H2OEG(self,Re,T_r,P_r):
@@ -302,12 +301,32 @@ def DP_air(self,T_ai,P_ai,T_ao,P_ao_tmp):
     '''
         Calculate pressure drop through louver fins of air
     '''
-    K_c=0.96;K_e=0.6
+    sigma_K_c=np.array([0.0998923586380184,0.1533285509902264,0.20114352910644695,0.2559862929607125,0.30027807995879835,\
+        0.35159596210418154,0.4008039869964784,0.4528217737113951,0.5006147741478959,0.5540272982296366,0.6018135363031468,\
+        0.6481915122838517,0.7030004643231641,0.7521797491727505,0.8027672961151423,0.856154461335668,0.902517221999644,\
+        0.9488799826636198,0.9980457427872251])
+    K_c_tmp=np.array([0.39802350427350386,0.3896768162393158,0.3844601362179483,0.37611344818376025,0.3667234241452988,\
+        0.3531600560897432,0.3395966880341874,0.323946647970085,0.3051665998931621,0.2822132077991448,0.25925981570512757,\
+        0.23526308760683734,0.20604967948717912,0.17474959935897405,0.1444928552350424,0.10588942307692273,0.0725026709401706,\
+        0.03911591880341825,-0.0005308493589750718])
+    sigma_K_e=np.array([0.10196840407615151,0.14404551719479566,0.20156279561186796,0.24785962323668492,0.2997776650974894,\
+        0.3531090408233421,0.4008344176299364,0.4499731283015789,0.5012250774078031,0.5496790988266411,0.6016529301821186,\
+        0.653631833309839,0.7028128087501732,0.7527021417137791,0.8025982370403758,0.8532060710717395,0.9024124053732887,\
+        0.9488157402152091,0.9987473379475063])
+    K_e_tmp=np.array([0.8111845619658116,0.7371077056623927,0.6432074652777773,0.5691306089743584,0.49192374465811906,\
+        0.41889022435897405,0.35837673611111076,0.3020365918803414,0.24778311965811906,0.2029196714743584,0.16014289529914527,\
+        0.12049612713675151,0.09023938301282008,0.06311264690170915,0.04015925480769189,0.022422542735042184,0.007815838675213183,\
+        -0.0005308493589748497,-0.0015741853632484926])
+
+    K_c_interpolate=interpolate.UnivariateSpline(sigma_K_c,K_c_tmp,s=0)        # pass all the points forceabley
+    K_e_interpolate=interpolate.UnivariateSpline(sigma_K_e,K_e_tmp,s=0)
+    K_c=K_c_interpolate(self.sigma)
+    K_e=K_e_interpolate(self.sigma)
     rho_ai = CP.PropsSI('D','T',T_ai+273.15,'P',P_ai*1e3,'Air')
     rho_ao = CP.PropsSI('D','T',T_ao+273.15,'P',P_ao_tmp*1e3,'Air')
-    f_air = airside_dpdz_Chang_Wang_1999(self,self.T_ai,self.P_ai,self.A_front,self.A_air_free,self.L_louver,self.P_fin,self.h_fin,\
-        self.t_fin,self.Dh_fin,self.L_louver,self.D_fin,self.t_tube,self.D_tube,self.theta_louver)
-    DELTAP_air = airside_dpdz_Chang_Wang_1996(f_air,self.A_air_free,self.A_air_tot,self.A_front,rho_ai,rho_ao,self.rho_w,self.G_air,K_c,K_e)
+    f_air = airside_dpdz_Chang_Wang_1999(self,self.T_ai,self.P_ai,self.P_louver,self.P_fin,self.h_fin,\
+        self.t_fin,self.Dh_fin,self.L_louver,self.D_fin,self.P_tube,self.t_tube,self.theta_louver)
+    DELTAP_air = airside_dpdz_Chang_Wang_1996(f_air,self.A_air_free,self.A_air_tot,self.A_front,rho_ai,rho_ao,self.G_air,K_c,K_e)
 
     return DELTAP_air
 
@@ -337,12 +356,12 @@ def epsilon_NTU(self,htc_air,htc_ref,T_ri,P_ri,m_dot_ref,T_ai,P_ai,m_dot_air,R_a
 
 def radiator_tube(self):
     T_r_dist = np.array([self.T_ri])
-    T_a_dist = np.array([self.T_ai])
     P_r_dist = np.array([self.P_ri])
-    P_a_dist = np.array([self.P_ai])
-    Q_dist = np.array([0])
-    DELTAP_air_dist = np.array([0])
-    DELTAP_H2OEG_dist = np.array([0])
+    T_a_dist = np.array([])
+    P_a_dist = np.array([])
+    Q_dist = np.array([])
+    DELTAP_air_dist = np.array([])
+    DELTAP_H2OEG_dist = np.array([])
     T_ri = self.T_ri
     P_ri = self.P_ri
     for i in range(self.N_elemptube):
@@ -390,12 +409,11 @@ def radiator_tubeelem(self,T_ri,P_ri):
 
     DELTAP_air_tmp = 0
     DELTAP_air = 20
-    P_ao_tmp = P_ai - DELTAP_air_tmp
-    while abs(DELTAP_air_tmp-DELTAP_air)>0.2:
+    P_ao_tmp = self.P_ai - DELTAP_air_tmp
+    while abs(DELTAP_air_tmp-DELTAP_air)>1e-8:
         DELTAP_air_tmp = DELTAP_air
         DELTAP_air = DP_air(self,self.T_ai,self.P_ai,T_ao,P_ao_tmp)
         P_ao = self.P_ai-DELTAP_air/1e3
-
 
     return T_ro, P_ro, T_ao, P_ao, Q, DELTAP_air, DELTAP_H2OEG
 
@@ -415,10 +433,204 @@ def radiator_system(self):
     T_ao = np.average(T_a_dist)
     P_ao = np.average(P_a_dist)
 
-    return  T_ro,P_ro,T_ao,P_ao,Q_tot
+    return  T_ro,P_ro,T_ao,P_ao,Q_dist,Q_tot,T_r_dist,T_a_dist,P_r_dist,P_a_dist,DELTAP_air_dist,DELTAP_H2OEG_dist
 
 
+def N_segment_effect(self):
+    T_ri = 75       # [C]
+    P_ri = 150      # [kPa]
+    vol_dot_ref=40  # [L/min]
+    T_ai = 25       # [C]
+    P_ai = 99.5     # [kPa]
+    rh=0.5
+    m_dot_air = 5000    # [kg/h]
 
+    # Define data storage
+    N_segment_1_dict = {}
+    N_segment_2_dict = {}
+    T_ro_dict = {}
+    P_ro_dict = {}
+    T_ao_dict = {}
+    P_ao_dict = {}
+    Q_dist_dict = {}
+    Q_dict = {}
+    T_r_dist_dict = {}
+    T_a_dist_dict = {}
+    P_r_dist_dict = {}
+    P_a_dist_dict = {}
+    DELTAP_air_dist_dict = {}
+    DELTAP_H2OEG_dist_dict = {}
+
+    for N_segment in range(1,51):
+        N_segment_1 = np.array(range(N_segment+1))
+        N_segment_2 = np.array(range(1,N_segment+1))
+        self=radiator(T_ri,P_ri,vol_dot_ref,T_ai,P_ai,m_dot_air,N_segment)
+        [T_ro,P_ro,T_ao,P_ao,Q_dist,Q_tot,T_r_dist,T_a_dist,P_r_dist,P_a_dist,DELTAP_air_dist,DELTAP_H2OEG_dist] = radiator_system(self)
+        N_segment_1_dict[N_segment] = N_segment_1
+        N_segment_2_dict[N_segment] = N_segment_2
+        T_ro_dict[N_segment] = T_ro; P_ro_dict[N_segment] = P_ro
+        T_ao_dict[N_segment] = T_ao; P_ao_dict[N_segment] = P_ao
+        Q_dist_dict[N_segment] = Q_dist
+        Q_dict[N_segment] = Q_tot
+        T_r_dist_dict[N_segment] = T_r_dist; T_a_dist_dict[N_segment] = T_a_dist
+        P_r_dist_dict[N_segment] = P_r_dist; P_a_dist_dict[N_segment] = P_a_dist
+        DELTAP_air_dist_dict[N_segment] = DELTAP_air_dist
+        DELTAP_H2OEG_dist_dict[N_segment] = DELTAP_H2OEG_dist
+
+    return N_segment_1_dict,N_segment_2_dict,T_ro_dict,P_ro_dict,T_ao_dict,P_ao_dict,Q_dist_dict,Q_dict,T_r_dist_dict,T_a_dist_dict,P_r_dist_dict,P_a_dist_dict,DELTAP_air_dist_dict,DELTAP_H2OEG_dist_dict
+
+def plot_result_segment(self):
+    [N_segment_1_dict,N_segment_2_dict,T_ro_dict,P_ro_dict,T_ao_dict,P_ao_dict,Q_dist_dict,Q_dict,T_r_dist_dict,\
+        T_a_dist_dict,P_r_dist_dict,P_a_dist_dict,DELTAP_air_dist_dict,DELTAP_H2OEG_dist_dict] = N_segment_effect(self)
+    print(T_ro_dict[40],P_ro_dict[40],T_ao_dict[40],P_ao_dict[40],Q_dict[40])
+    # ------------ plot overall performance of the heat exchanger at 50 segments ------------- #
+    N_elemptube = 40
+    x_1 = N_segment_1_dict[N_elemptube]; x_2 = N_segment_2_dict[N_elemptube]
+    overall_performance_1 = [T_r_dist_dict[N_elemptube],P_r_dist_dict[N_elemptube]]
+    overall_performance_2 = [T_a_dist_dict[N_elemptube],P_a_dist_dict[N_elemptube],\
+                             DELTAP_air_dist_dict[N_elemptube],\
+                             Q_dist_dict[N_elemptube],DELTAP_H2OEG_dist_dict[N_elemptube]]
+    
+    fig1, (ax1,ax2) = plt.subplots(2,1)
+    ax1.plot(x_1,overall_performance_1[0],'o-')
+    ax1.grid()
+    ax1.set_title('Radiator H2O-EG Temp Distribution, N=40')
+    ax1.set_ylabel('T [C]')
+    ax2.plot(x_1,overall_performance_1[1],'o-')
+    ax2.grid()
+    ax2.set_title('Radiator H2O-G Pressure Distribution, N=40')
+    ax2.set_xlabel('Location [-]')
+    ax2.set_ylabel('P [kPa]')
+    fig1.tight_layout()
+    fig1.set_figheight(14)
+    fig1.set_figwidth(14)
+    fig1.savefig('Radiator_Overall_Performance_1.pdf')
+
+    fig2, (ax1,ax2,ax3,ax4,ax5) = plt.subplots(5,1)
+    ax1.plot(x_2,overall_performance_2[0],'o-')
+    ax1.grid()
+    ax1.set_title('Radiator Air Temperature Outlet Distribution, N=40')
+    ax1.set_ylabel('T [C]')
+    ax2.plot(x_2,overall_performance_2[1],'o-')
+    ax2.grid()
+    ax2.set_title('Radiator Air Pressure Outlet Distribution, N=40')
+    ax2.set_ylabel('P [kPa]')
+    ax3.plot(x_2,overall_performance_2[2],'o-')
+    ax3.grid()
+    ax3.set_title('Radiator Air Pressure Drop Distribution, N=40')
+    ax3.set_ylabel('P [Pa]')
+    ax4.plot(x_2,overall_performance_2[3],'o-')
+    ax4.grid()
+    ax4.set_title('Radiator Heat Transfer Rate Distribution, N=40')
+    ax4.set_ylabel('Q [kW]')
+    ax5.plot(x_2,overall_performance_2[4],'o-')
+    ax5.grid()
+    ax5.set_title('Radiator H2O-EG Pressure Drop Distribution, N=40')
+    ax5.set_ylabel('P [Pa]')
+    ax5.set_xlabel('Location (flow from left to right) [-]')
+    fig2.set_figheight(18)
+    fig2.set_figwidth(14)
+    fig2.savefig('Radiator_Overall_Performance_2.pdf')
+
+    # ----------- plot segment impact on the model ----------- #
+    fig3, (ax1,ax2,ax3,ax4,ax5) = plt.subplots(5,1)
+    T_ro_list=T_ro_dict.items()
+    x,y = zip(*T_ro_list)
+    ax1.plot(x,y,'o-')
+    ax1.grid()
+    ax1.set_title('Radiator H2O-EG Temperature Outlet')
+    ax1.set_ylabel('T [C]')
+
+    P_ro_list=P_ro_dict.items()
+    x,y=zip(*P_ro_list)
+    ax2.plot(x,y,'o-')
+    ax2.grid()
+    ax2.set_title('Radiator H2O-EG Pressure Outlet')
+    ax2.set_ylabel('P [kPa]')
+
+    T_ao_list=T_ao_dict.items()
+    x,y=zip(*T_ao_list)
+    ax3.plot(x,y,'o-')
+    ax3.grid()
+    ax3.set_title('Radiator Air Temperature Outlet')
+    ax3.set_ylabel('T [C]')
+
+    P_ao_list=P_ao_dict.items()
+    x,y=zip(*P_ao_list)
+    ax4.plot(x,y,'o-')
+    ax4.grid()
+    ax4.set_title('Radiator Air Pressure Outlet')
+    ax4.set_ylabel('P [kPa]')
+
+    Q_list=Q_dict.items()
+    x,y=zip(*Q_list)
+    ax5.plot(x,y,'o-')
+    ax5.grid()
+    ax5.set_title('Radiator Heat Transfer Rate')
+    ax5.set_ylabel('Q [kW]')
+    ax5.set_xlabel('N_segment [-]')
+    fig3.set_figheight(18)
+    fig3.set_figwidth(14)
+    fig3.savefig('Radiator_Segment_Impact.pdf')
+
+    return
+
+def plot_result_m_dot_air(self):
+    T_ri = 75       # [C]
+    P_ri = 150      # [kPa]
+    vol_dot_ref=40  # [L/min]
+    T_ai = 25       # [C]
+    P_ai = 99.5     # [kPa]
+    N_segment = 40
+    T_ro_dict={}
+    P_ro_dict={}
+    T_ao_dict={}
+    P_ao_dict={}
+    Q_tot_dict={}
+    for m_dot_air in range(4000,6000,100):
+        self=radiator(T_ri,P_ri,vol_dot_ref,T_ai,P_ai,m_dot_air,N_segment)
+        result_tmp = radiator_system(self)
+        # T_ro,P_ro,T_ao,P_ao,Q_dist,Q_tot,T_r_dist,T_a_dist,P_r_dist,P_a_dist,DELTAP_air_dist,DELTAP_H2OEG_dist
+        T_ro_dict[m_dot_air]=result_tmp[0]
+        P_ro_dict[m_dot_air]=result_tmp[1]
+        T_ao_dict[m_dot_air]=result_tmp[2]
+        P_ao_dict[m_dot_air]=result_tmp[3]
+        Q_tot_dict[m_dot_air]=result_tmp[5]
+    fig, (ax1,ax2,ax3,ax4,ax5) = plt.subplots(5,1)
+    T_ro_list=T_ro_dict.items()
+    x,y=zip(*T_ro_list)
+    ax1.plot(x,y,'-')
+    ax1.set_ylabel('T [C]')
+    ax1.set_title('Outlet coolant temperature vs. air mass flow rate')
+    
+    P_ro_list=P_ro_dict.items()
+    x,y=zip(*P_ro_list)
+    ax2.plot(x,y,'-')
+    ax2.set_ylabel('P [kPa]')
+    ax2.set_title('Outlet coolant pressure vs. air mass flow rate')
+
+    T_ao_list=T_ao_dict.items()
+    x,y=zip(*T_ao_list)
+    ax3.plot(x,y,'-')
+    ax3.set_ylabel('T [C]')
+    ax3.set_title('Outlet air emperature vs. air mass flow rate')
+
+    P_ao_list=P_ao_dict.items()
+    x,y=zip(*P_ao_list)
+    ax4.plot(x,y,'-')
+    ax4.set_ylabel('P [kPa]')
+    ax4.set_title('Outlet air pressure vs. air mass flow rate')
+
+    Q_tot_list=Q_tot_dict.items()
+    x,y=zip(*Q_tot_list)
+    ax5.plot(x,y,'-')
+    ax5.set_ylabel('Q [kW]')
+    ax5.set_title('Heat transfer rate vs. air mass flow rate')
+    ax5.set_xlabel('air mass flow rate [kg/h]')
+    fig.set_figheight(18)
+    fig.set_figwidth(14)
+    fig.savefig('Radiator_airmassflowrate_Impact.pdf')
+    return
 
 T_ri = 75       # [C]
 P_ri = 150      # [kPa]
@@ -427,6 +639,10 @@ T_ai = 25       # [C]
 P_ai = 99.5     # [kPa]
 rh=0.5
 m_dot_air = 5000    # [kg/h]
-N_segment = 10
+N_segment = 40
 self=radiator(T_ri,P_ri,vol_dot_ref,T_ai,P_ai,m_dot_air,N_segment)
-[T_ro,P_ro,T_ao,P_ao,Q_tot] = radiator_system(self)
+# [T_ro,P_ro,T_ao,P_ao,Q_tot,T_r_dist,T_a_dist,P_r_dist,P_a_dist,DELTAP_air_dist,DELTAP_H2OEG_dist] = radiator_system(self)
+
+plot_result_segment(self)
+
+plot_result_m_dot_air(self)
